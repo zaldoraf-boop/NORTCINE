@@ -1,0 +1,25 @@
+import 'dotenv/config';
+import express from 'express';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import nodemailer from 'nodemailer';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+const app=express();app.disable('x-powered-by');app.use(helmet());app.use(express.json({limit:'24kb'}));app.use(express.static(path.join(path.dirname(fileURLToPath(import.meta.url)),'public')));
+const limiter=rateLimit({windowMs:3600000,limit:10,standardHeaders:'draft-7',legacyHeaders:false,message:{error:'Limite de tentativas atingido. Tenta mais tarde.'}});
+const smtp=nodemailer.createTransport({host:process.env.SMTP_HOST,port:Number(process.env.SMTP_PORT||587),secure:process.env.SMTP_PORT==='465',auth:{user:process.env.SMTP_USER,pass:process.env.SMTP_PASS},connectionTimeout:15000,socketTimeout:20000});
+const areas=["Actuação — actor/actriz", "Realização", "Produção", "Câmara e fotografia", "Som", "Montagem e edição", "Guião", "Maquilhagem e guarda-roupa", "Outra / a descobrir"];
+const authorization="Declaro que sou o encarregado de educação do menor identificado nesta candidatura e autorizo a sua inscrição e o contacto pela NORTCINE para efeitos de selecção. Esta autorização não abrange captação ou utilização da sua imagem, nem substitui autorizações específicas para filmagens.";
+app.post('/api/applications',limiter,async(req,res)=>{
+const d=req.body;if(!d||typeof d!=='object'||Array.isArray(d)||d.website)return res.status(400).json({error:'Pedido inválido.'});
+const text=(k,max=150)=>typeof d[k]==='string'&&d[k].trim().length>0&&d[k].length<=max;
+const phone=k=>text(k,30)&&/^[+\d\s().-]{7,30}$/.test(d[k])&&d[k].replace(/\D/g,'').length>=7;
+const age=Number(d.age);
+if(!text('name')||!text('age',3)||!Number.isInteger(age)||age<7||age>120||!phone('phone')||!text('location')||!areas.includes(d.area)||!text('experience',3000)||d.consent!=='on'||d.availability!=='on')return res.status(400).json({error:'Verifica os campos e as confirmações obrigatórias. Idade mínima: 7 anos.'});
+if(age<18&&(!text('guardianName')||!text('guardianRelation',100)||!phone('guardianPhone')||d.authorization!=='on'||(d.guardianEmail&&(!text('guardianEmail',254)||!/^\S+@\S+\.\S+$/.test(d.guardianEmail)))))return res.status(400).json({error:'Verifica os dados e a autorização do encarregado.'});
+if(!['SMTP_HOST','SMTP_USER','SMTP_PASS','SMTP_FROM'].every(k=>process.env[k]))return res.status(503).json({error:'O envio de email ainda não está configurado. Contacta a equipa: +258 860620854.'});
+const lines=['NORTCINE — NOVA CANDIDATURA',`Nome: ${d.name.trim()}`,`Idade: ${age}`,`Telefone: ${d.phone.trim()}`,`Bairro/cidade: ${d.location.trim()}`,`Área: ${d.area}`,`Experiência: ${d.experience.trim()}`,'Disponibilidade: confirmada'];
+if(age<18)lines.push('','ENCARREGADO DE EDUCAÇÃO',`Nome: ${d.guardianName.trim()}`,`Relação: ${d.guardianRelation.trim()}`,`Telefone: ${d.guardianPhone.trim()}`,`Email: ${d.guardianEmail?.trim()||'Não indicado'}`,`Autorização declarada: ${authorization}`);
+lines.push('','Consentimento para envio e contacto: confirmado',`Recepção UTC: ${new Date().toISOString()}`);const body=lines.join('\n');
+try{const result=await smtp.sendMail({from:process.env.SMTP_FROM,to:'zaldoraf@gmail.com',subject:'NORTCINE | Nova candidatura',text:body});if(!result.accepted?.length)throw new Error('SMTP rejected');res.json({ok:true,whatsappUrl:'https://wa.me/258860620854?text='+encodeURIComponent(body)});}catch{res.status(502).json({error:'Não foi possível confirmar o envio por email. Tenta mais tarde ou contacta a NORTCINE.'});}});
+app.use((err,req,res,next)=>res.status(400).json({error:'Pedido inválido.'}));app.listen(Number(process.env.PORT||3000),()=>console.log('Servidor NORTCINE iniciado'));
